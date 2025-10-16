@@ -1,0 +1,1451 @@
+/**
+ * APP.JS - JavaScript principale per Sistema Gestione Ticket Post-Vendita
+ */
+
+// Variabili globali
+let currentUser = null;
+let currentPage = 1;
+let totalPages = 1;
+let sortColumn = 'NUM_TICKET';
+let sortDirection = 'DESC';
+let searchResults = [];
+let searchParams = {};
+
+// Inizializzazione
+document.addEventListener('DOMContentLoaded', function() {
+    // Se currentUser Þ giÓ definito (da index.php), salta il check
+    if (window.currentUser) {
+        currentUser = window.currentUser;
+        console.log('User data loaded from PHP:', currentUser);
+        updateUserInterface();
+        
+        // Carica dati dashboard SOLO se il tab dashboard Þ visibile
+        const dashboardTab = document.getElementById('dashboardTab');
+        if (dashboardTab && dashboardTab.style.display !== 'none') {
+            loadDashboardData();
+        }
+        
+        setupEventListeners();
+    } else {
+        // Altrimenti verifica autenticazione (per altre pagine)
+        checkAuthentication();
+        setupEventListeners();
+    }
+});
+
+// ===========================================
+// GESTIONE AUTENTICAZIONE E INIZIALIZZAZIONE
+// ===========================================
+
+function checkAuthentication() {
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.authenticated) {
+                window.location.href = 'login.html';
+                return;
+            }
+            
+            currentUser = data.user;
+            updateUserInterface();
+            loadDashboardData();
+        })
+        .catch(error => {
+            console.error('Errore verifica sessione:', error);
+            window.location.href = 'login.html';
+        });
+}
+
+function updateUserInterface() {
+    console.log('Updating UI with user:', currentUser);
+    
+    // Aggiorna elementi UI se esistono
+    const userNameEl = document.getElementById('currentUser');
+    const userRepartoEl = document.getElementById('currentReparto');
+    
+    if (userNameEl) {
+        userNameEl.textContent = currentUser.nome_completo || currentUser.username;
+    }
+    
+    if (userRepartoEl) {
+        userRepartoEl.textContent = `Livello: ${currentUser.livello}`;
+    }
+    
+    // Mostra/nascondi elementi in base al livello solo se gli elementi esistono
+    const navUpload = document.getElementById('navUpload');
+    const navAdmin = document.getElementById('navAdmin');
+    
+    if (navUpload && (currentUser.livello === 'BACKOFFICE' || currentUser.livello === 'ADMIN')) {
+        navUpload.style.display = 'block';
+    }
+    
+    if (navAdmin && currentUser.livello === 'ADMIN') {
+        navAdmin.style.display = 'block';
+    }
+}
+
+function setupEventListeners() {
+    // Upload form
+    const uploadForm = document.getElementById('uploadForm');
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', handleUpload);
+    }
+    
+    const fileInput = document.getElementById('fileAllegati');
+    if (fileInput) {
+        fileInput.addEventListener('change', previewFiles);
+    }
+    
+    // Search form
+    const searchForm = document.getElementById('searchForm');
+    if (searchForm) {
+        searchForm.addEventListener('submit', handleSearch);
+    }
+    
+    // Auto-set data di oggi per nuovi ticket
+    const dataReg = document.getElementById('dataRegistrazione');
+    if (dataReg) {
+        dataReg.value = new Date().toISOString().split('T')[0];
+    }
+    
+    // Sorting headers
+    document.querySelectorAll('.sortable').forEach(th => {
+        th.addEventListener('click', function() {
+            const column = this.dataset.column;
+            if (sortColumn === column) {
+                sortDirection = sortDirection === 'ASC' ? 'DESC' : 'ASC';
+            } else {
+                sortColumn = column;
+                sortDirection = 'ASC';
+            }
+            updateSortIcons();
+            performSearch();
+        });
+    });
+}
+
+// ===========================================
+// GESTIONE DASHBOARD
+// ===========================================
+
+function loadDashboardData() {
+    console.log('Loading dashboard data...');
+    
+    fetch('dashboard_data.php')
+        .then(response => {
+            console.log('Dashboard response status:', response.status);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Dashboard data received:', data);
+            if (data.success) {
+                updateDashboardStats(data.stats);
+                updateRecentTickets(data.recent_tickets);
+                updateMonthlyStats(data.monthly_stats);
+            } else {
+                console.error('Dashboard data error:', data.error);
+                showAlert('Errore caricamento dashboard: ' + (data.error || 'Errore sconosciuto'), 'warning');
+                
+                // Mostra errore nei container
+                showDashboardError('Errore caricamento dati');
+            }
+        })
+        .catch(error => {
+            console.error('Errore caricamento dashboard:', error);
+            showAlert('Errore di connessione durante il caricamento della dashboard', 'danger');
+            
+            // Mostra errore nei container
+            showDashboardError('Errore di connessione');
+        });
+}
+
+function showDashboardError(message) {
+    const recentTickets = document.getElementById('recentTickets');
+    const monthlyStats = document.getElementById('monthlyStats');
+    
+    if (recentTickets) {
+        recentTickets.innerHTML = `<div class="alert alert-warning">${message}</div>`;
+    }
+    
+    if (monthlyStats) {
+        monthlyStats.innerHTML = `<div class="alert alert-warning">${message}</div>`;
+    }
+}
+
+function updateDashboardStats(stats) {
+    console.log('Updating dashboard stats:', stats);
+    
+    // Controlla se gli elementi esistono prima di aggiornarli
+    const totalTicketsEl = document.getElementById('totalTickets');
+    const todayTicketsEl = document.getElementById('todayTickets');
+    const totalFilesEl = document.getElementById('totalFiles');
+    const totalSizeEl = document.getElementById('totalSize');
+    
+    if (totalTicketsEl) totalTicketsEl.textContent = stats.total_tickets || '0';
+    if (todayTicketsEl) todayTicketsEl.textContent = stats.today_tickets || '0';
+    if (totalFilesEl) totalFilesEl.textContent = stats.total_files || '0';
+    if (totalSizeEl) totalSizeEl.textContent = formatFileSize(stats.total_size || 0);
+}
+
+function updateRecentTickets(tickets) {
+    console.log('Updating recent tickets:', tickets);
+    const container = document.getElementById('recentTickets');
+    
+    if (!container) {
+        console.error('Container recentTickets not found');
+        return;
+    }
+    
+    if (!tickets || tickets.length === 0) {
+        container.innerHTML = '<p class="text-muted text-center py-4">Nessun ticket recente</p>';
+        return;
+    }
+    
+    let tableHtml = `
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Ticket</th>
+                    <th>Produttore</th>
+                    <th>Data</th>
+                    <th>File</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    tickets.forEach(ticket => {
+        tableHtml += `
+            <tr onclick="viewTicketDetails(${ticket.NUM_TICKET})" style="cursor: pointer;" class="ticket-row">
+                <td><strong>#${ticket.NUM_TICKET}</strong></td>
+                <td>${escapeHtml(ticket.RAG_SOC_PR)}</td>
+                <td>${formatDate(ticket.DATA_REG)}</td>
+                <td><i class="fas fa-paperclip"></i> ${ticket.FILE_COUNT || 0}</td>
+            </tr>
+        `;
+    });
+    
+    tableHtml += '</tbody></table>';
+    container.innerHTML = tableHtml;
+}
+
+function updateMonthlyStats(monthlyData) {
+    console.log('Updating monthly stats:', monthlyData);
+    const container = document.getElementById('monthlyStats');
+    
+    if (!container) {
+        console.error('Container monthlyStats not found');
+        return;
+    }
+    
+    if (!monthlyData || !monthlyData.mensili || monthlyData.mensili.length === 0) {
+        container.innerHTML = '<p class="text-muted text-center py-4">Nessun dato disponibile</p>';
+        return;
+    }
+    
+    let statsHtml = '<div class="row">';
+    
+    monthlyData.mensili.slice(0, 6).forEach(mese => {
+        statsHtml += `
+            <div class="col-12 mb-2">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="fw-bold">${mese.mese_nome} ${mese.anno}</span>
+                    <span class="badge bg-primary">${mese.ticket_count}</span>
+                </div>
+                <div class="progress mt-1" style="height: 4px;">
+                    <div class="progress-bar" style="width: ${Math.min(100, (mese.ticket_count / 10) * 100)}%"></div>
+                </div>
+            </div>
+        `;
+    });
+    
+    statsHtml += '</div>';
+    container.innerHTML = statsHtml;
+}
+
+// ===========================================
+// GESTIONE UPLOAD
+// ===========================================
+
+function handleUpload(e) {
+    e.preventDefault();
+    
+    const formData = new FormData();
+    
+    // Raccoglie dati form
+    const numTicket = document.getElementById('numTicket').value;
+    const numCartellino = document.getElementById('numCartellino').value;
+    const dataRegistrazione = document.getElementById('dataRegistrazione').value;
+    const files = document.getElementById('fileAllegati').files;
+    
+    // Validazione client-side
+    if (!numTicket || !numCartellino || !dataRegistrazione) {
+        showAlert('Compilare tutti i campi obbligatori', 'warning');
+        return;
+    }
+    
+    if (files.length === 0) {
+        showAlert('Selezionare almeno un file', 'warning');
+        return;
+    }
+    
+    // Verifica dimensione file
+    let totalSize = 0;
+    for (let i = 0; i < files.length; i++) {
+        totalSize += files[i].size;
+        if (files[i].size > 20 * 1024 * 1024) { // 20MB
+            showAlert(`File "${files[i].name}" troppo grande (max 20MB)`, 'warning');
+            return;
+        }
+    }
+    
+    // Aggiunge dati al form
+    formData.append('num_ticket', numTicket);
+    formData.append('num_cartellino', numCartellino);
+    formData.append('data_registrazione', dataRegistrazione);
+    
+    // Aggiunge file
+    for (let i = 0; i < files.length; i++) {
+        formData.append('files[]', files[i]);
+    }
+    
+    // Mostra loading
+    setUploadLoading(true);
+    
+    // Invia richiesta
+    fetch('upload.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        setUploadLoading(false);
+        
+        if (data.success) {
+            showAlert(`Ticket #${data.ticket_id} caricato con successo! (${data.files_count} file)`, 'success');
+            resetUploadForm();
+            
+            // Ricarica dashboard
+            setTimeout(() => {
+                loadDashboardData();
+            }, 1000);
+            
+        } else {
+            showAlert('Errore upload: ' + (data.error || 'Errore sconosciuto'), 'danger');
+        }
+    })
+    .catch(error => {
+        setUploadLoading(false);
+        console.error('Errore upload:', error);
+        showAlert('Errore di connessione durante l\'upload', 'danger');
+    });
+}
+
+function previewFiles() {
+    const files = document.getElementById('fileAllegati').files;
+    const preview = document.getElementById('filePreview');
+    
+    if (files.length === 0) {
+        preview.innerHTML = '';
+        return;
+    }
+    
+    let html = '<div class="mt-2"><strong>File selezionati:</strong></div>';
+    let totalSize = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const size = file.size;
+        totalSize += size;
+        
+        const icon = getFileIcon(file.name);
+        const sizeFormatted = formatFileSize(size);
+        
+        let statusClass = '';
+        let statusIcon = '';
+        
+        if (size > 20 * 1024 * 1024) {
+            statusClass = 'text-danger';
+            statusIcon = '<i class="fas fa-exclamation-triangle"></i> ';
+        }
+        
+        html += `
+            <div class="file-info d-flex align-items-center ${statusClass}">
+                <i class="${icon}"></i>
+                <div class="flex-grow-1">
+                    <div class="fw-bold">${statusIcon}${escapeHtml(file.name)}</div>
+                    <small class="text-muted">${sizeFormatted}</small>
+                </div>
+            </div>
+        `;
+    }
+    
+    html += `<div class="mt-2"><small class="text-muted">Totale: ${formatFileSize(totalSize)}</small></div>`;
+    
+    preview.innerHTML = html;
+}
+
+function setUploadLoading(loading) {
+    const btn = document.getElementById('uploadBtn');
+    const btnText = document.getElementById('uploadBtnText');
+    const btnSpinner = document.getElementById('uploadSpinner');
+    
+    if (loading) {
+        btn.disabled = true;
+        btnText.classList.add('d-none');
+        btnSpinner.classList.remove('d-none');
+    } else {
+        btn.disabled = false;
+        btnText.classList.remove('d-none');
+        btnSpinner.classList.add('d-none');
+    }
+}
+
+function resetUploadForm() {
+    document.getElementById('uploadForm').reset();
+    document.getElementById('filePreview').innerHTML = '';
+    
+    // Reimposta data di oggi
+    const dataReg = document.getElementById('dataRegistrazione');
+    if (dataReg) {
+        dataReg.value = new Date().toISOString().split('T')[0];
+    }
+}
+
+// ===========================================
+// GESTIONE RICERCA
+// ===========================================
+
+function handleSearch(e) {
+    e.preventDefault();
+    
+    // Raccoglie parametri di ricerca
+    searchParams = {
+        num_ticket: document.getElementById('searchTicket').value,
+        rag_sociale: document.getElementById('searchProduttore').value,
+        nome_ispettore: document.getElementById('searchIspettore').value,
+        data_dal: document.getElementById('searchDataDal').value,
+        page: 1,
+        per_page: 20,
+        sort_column: sortColumn,
+        sort_direction: sortDirection
+    };
+    
+    performSearch();
+}
+
+function performSearch() {
+    // Costruisce query string
+    const params = new URLSearchParams();
+    
+    Object.keys(searchParams).forEach(key => {
+        if (searchParams[key]) {
+            params.append(key, searchParams[key]);
+        }
+    });
+    
+    params.set('page', currentPage);
+    params.set('sort_column', sortColumn);
+    params.set('sort_direction', sortDirection);
+    
+    // Mostra loading
+    showSearchLoading(true);
+    
+    fetch('search.php?' + params.toString())
+        .then(response => response.json())
+        .then(data => {
+            showSearchLoading(false);
+            
+            if (data.success) {
+                displaySearchResults(data);
+                updatePagination(data);
+                
+                document.getElementById('searchResults').style.display = 'block';
+                document.getElementById('resultsCount').textContent = `${data.total_count} risultati`;
+                
+            } else {
+                showAlert('Errore ricerca: ' + (data.error || 'Errore sconosciuto'), 'danger');
+            }
+        })
+        .catch(error => {
+            showSearchLoading(false);
+            console.error('Errore ricerca:', error);
+            showAlert('Errore di connessione durante la ricerca', 'danger');
+        });
+}
+
+function displaySearchResults(data) {
+    const tbody = document.getElementById('resultsBody');
+    
+    if (!data.data || data.data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Nessun risultato trovato</td></tr>';
+        return;
+    }
+    
+    let html = '';
+    
+    data.data.forEach(ticket => {
+        html += `
+            <tr onclick="viewTicketDetails(${ticket.NUM_TICKET})" style="cursor: pointer;" class="ticket-row">
+                <td><strong>#${ticket.NUM_TICKET}</strong></td>
+                <td>${ticket.NUM_CARTEL}</td>
+                <td title="${escapeHtml(ticket.RAG_SOC_PR)}">${truncateText(ticket.RAG_SOC_PR, 25)}</td>
+                <td title="${escapeHtml(ticket.NOME_ISPET)}">${truncateText(ticket.NOME_ISPET, 20)}</td>
+                <td>${formatDate(ticket.DATA_REG)}</td>
+                <td>
+                    <span class="badge bg-primary">${ticket.FILE_COUNT || 0}</span>
+                    <small class="text-muted">(${formatFileSize(ticket.TOTAL_SIZE || 0)})</small>
+                </td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" onclick="event.stopPropagation(); viewTicketDetails(${ticket.NUM_TICKET})" title="Dettagli">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                        <button class="btn btn-outline-success" onclick="event.stopPropagation(); downloadTicketZip(${ticket.NUM_TICKET})" title="Download ZIP">
+                            <i class="fas fa-download"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tbody.innerHTML = html;
+}
+
+function updatePagination(data) {
+    const pagination = document.getElementById('pagination');
+    
+    if (data.total_pages <= 1) {
+        pagination.innerHTML = '';
+        return;
+    }
+    
+    let html = '';
+    
+    // Pulsante Previous
+    if (data.page > 1) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${data.page - 1})">½</a></li>`;
+    } else {
+        html += `<li class="page-item disabled"><span class="page-link">½</span></li>`;
+    }
+    
+    // Numeri di pagina
+    const startPage = Math.max(1, data.page - 2);
+    const endPage = Math.min(data.total_pages, data.page + 2);
+    
+    if (startPage > 1) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(1)">1</a></li>`;
+        if (startPage > 2) {
+            html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        if (i === data.page) {
+            html += `<li class="page-item active"><span class="page-link">${i}</span></li>`;
+        } else {
+            html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${i})">${i}</a></li>`;
+        }
+    }
+    
+    if (endPage < data.total_pages) {
+        if (endPage < data.total_pages - 1) {
+            html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${data.total_pages})">${data.total_pages}</a></li>`;
+    }
+    
+    // Pulsante Next
+    if (data.page < data.total_pages) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${data.page + 1})">╗</a></li>`;
+    } else {
+        html += `<li class="page-item disabled"><span class="page-link">╗</span></li>`;
+    }
+    
+    pagination.innerHTML = html;
+    
+    // Aggiorna variabili globali
+    currentPage = data.page;
+    totalPages = data.total_pages;
+}
+
+function changePage(page) {
+    currentPage = page;
+    performSearch();
+}
+
+function updateSortIcons() {
+    // Reset tutti gli icon
+    document.querySelectorAll('.sortable i').forEach(icon => {
+        icon.className = 'fas fa-sort';
+    });
+    
+    // Aggiorna icon della colonna attiva
+    const activeHeader = document.querySelector(`[data-column="${sortColumn}"] i`);
+    if (activeHeader) {
+        activeHeader.className = sortDirection === 'ASC' ? 'fas fa-sort-up' : 'fas fa-sort-down';
+    }
+}
+
+function showSearchLoading(show) {
+    const tbody = document.getElementById('resultsBody');
+    
+    if (show) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
+    }
+}
+
+function resetSearchForm() {
+    document.getElementById('searchForm').reset();
+    document.getElementById('searchResults').style.display = 'none';
+    searchParams = {};
+    currentPage = 1;
+}
+
+// ===========================================
+// GESTIONE TAB E NAVIGAZIONE
+// ===========================================
+
+function showUploadTab() {
+    hideAllTabs();
+    document.getElementById('uploadTab').style.display = 'block';
+    updateActiveNav('navUpload');
+    
+    // Reset form quando si apre il tab
+    if (document.getElementById('uploadForm')) {
+        resetUploadForm();
+    }
+}
+
+function showSearchTab() {
+    hideAllTabs();
+    document.getElementById('searchTab').style.display = 'block';
+    updateActiveNav(null);
+}
+
+function showAdminTab() {
+    hideAllTabs();
+    document.getElementById('adminTab').style.display = 'block';
+    updateActiveNav('navAdmin');
+    loadAdminData();
+}
+
+function showDashboardTab() {
+    hideAllTabs();
+    document.getElementById('dashboardTab').style.display = 'block';
+    updateActiveNav(null);
+    
+    // Carica i dati della dashboard quando si mostra il tab
+    loadDashboardData();
+}
+
+function hideAllTabs() {
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.style.display = 'none';
+    });
+}
+
+function updateActiveNav(activeId) {
+    document.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+    });
+    
+    if (activeId) {
+        const activeLink = document.querySelector(`#${activeId} .nav-link`);
+        if (activeLink) activeLink.classList.add('active');
+    } else {
+        // Attiva il primo link (Dashboard) se nessun ID specifico
+        const dashboardLink = document.querySelector('.navbar-nav .nav-link[href="index.html"]');
+        if (dashboardLink) dashboardLink.classList.add('active');
+    }
+}
+
+// ===========================================
+// GESTIONE DETTAGLI TICKET
+// ===========================================
+
+function viewTicketDetails(ticketId) {
+    fetch(`search.php?action=detail&ticket_id=${ticketId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayTicketModal(data.data);
+            } else {
+                showAlert('Errore caricamento dettagli: ' + (data.error || 'Errore sconosciuto'), 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Errore dettagli ticket:', error);
+            showAlert('Errore di connessione durante il caricamento dei dettagli', 'danger');
+        });
+}
+
+function displayTicketModal(ticketData) {
+    const ticket = ticketData.ticket;
+    const files = ticketData.files;
+    const stats = ticketData.stats;
+    
+    let modalContent = `
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="fw-bold">Informazioni Ticket</h6>
+                <table class="table table-sm">
+                    <tr><td><strong>Numero Ticket:</strong></td><td>#${ticket.NUM_TICKET}</td></tr>
+                    <tr><td><strong>Numero Cartellino:</strong></td><td>${ticket.NUM_CARTEL}</td></tr>
+                    <tr><td><strong>Data Registrazione:</strong></td><td>${formatDate(ticket.DATA_REG)}</td></tr>
+                    <tr><td><strong>Anno:</strong></td><td>${ticket.ANNO_TICKET}</td></tr>
+                </table>
+            </div>
+            <div class="col-md-6">
+                <h6 class="fw-bold">Informazioni Produttore/Ispettore</h6>
+                <table class="table table-sm">
+                    <tr><td><strong>Cod. Produttore:</strong></td><td>${ticket.COD_PRODUT}</td></tr>
+                    <tr><td><strong>Ragione Sociale:</strong></td><td>${escapeHtml(ticket.RAG_SOC_PR)}</td></tr>
+                    <tr><td><strong>Cod. Ispettore:</strong></td><td>${ticket.COD_ISPETT}</td></tr>
+                    <tr><td><strong>Nome Ispettore:</strong></td><td>${escapeHtml(ticket.NOME_ISPET)}</td></tr>
+                </table>
+            </div>
+        </div>
+        
+        <div class="row mt-3">
+            <div class="col-12">
+                <h6 class="fw-bold">Statistiche</h6>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="text-center p-2 bg-light rounded">
+                            <div class="h5 mb-0 text-primary">${stats.file_count}</div>
+                            <small>File Allegati</small>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center p-2 bg-light rounded">
+                            <div class="h5 mb-0 text-success">${formatFileSize(stats.total_size)}</div>
+                            <small>Dimensione Totale</small>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center p-2 bg-light rounded">
+                            <div class="h5 mb-0 text-info">${formatDate(ticket.DATA_INS)}</div>
+                            <small>Data Caricamento</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    if (files && files.length > 0) {
+        modalContent += `
+            <div class="row mt-3">
+                <div class="col-12">
+                    <h6 class="fw-bold">File Allegati</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Nome File</th>
+                                    <th>Tipo</th>
+                                    <th>Dimensione</th>
+                                    <th>Data Upload</th>
+                                    <th>Utente</th>
+                                    <th>Azioni</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+        `;
+        
+        files.forEach(file => {
+            const icon = getFileIcon(file.NOME_ORIG);
+            modalContent += `
+                <tr>
+                    <td>
+                        <i class="${icon}"></i>
+                        ${escapeHtml(file.NOME_ORIG)}
+                    </td>
+                    <td><span class="badge bg-secondary">${file.TIPO_FILE}</span></td>
+                    <td>${formatFileSize(file.DIMENSIONE)}</td>
+                    <td>${formatDateTime(file.DATA_UPLOAD)}</td>
+                    <td>${escapeHtml(file.USERNAME_UPL)}</td>
+                    <td>
+                        <div class="btn-group btn-group-sm">
+                            ${file.TIPO_FILE.match(/^(JPG|JPEG|PNG|GIF|BMP)$/i) ? 
+                                `<button class="btn btn-outline-info" onclick="previewFile(${file.ID_ALLEGATO})" title="Anteprima">
+                                    <i class="fas fa-eye"></i>
+                                </button>` : ''
+                            }
+                            <button class="btn btn-outline-primary" onclick="downloadFile(${file.ID_ALLEGATO})" title="Download">
+                                <i class="fas fa-download"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        modalContent += `
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-2">
+                        <button class="btn btn-success" onclick="downloadTicketZip(${ticket.NUM_TICKET})">
+                            <i class="fas fa-file-archive"></i> Download Tutti i File (ZIP)
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    } else {
+        modalContent += '<div class="alert alert-warning mt-3">Nessun file allegato trovato per questo ticket.</div>';
+    }
+    
+    document.getElementById('ticketModalBody').innerHTML = modalContent;
+    
+    // Mostra modal
+    const modal = new bootstrap.Modal(document.getElementById('ticketModal'));
+    modal.show();
+}
+
+// ===========================================
+// GESTIONE DOWNLOAD E PREVIEW
+// ===========================================
+
+function downloadFile(fileId) {
+    window.open(`download.php?id=${fileId}`, '_blank');
+}
+
+function downloadTicketZip(ticketId) {
+    window.open(`download.php?action=zip&ticket=${ticketId}`, '_blank');
+}
+
+function previewFile(fileId) {
+    const previewUrl = `download.php?action=preview&id=${fileId}`;
+    
+    // Crea modal per anteprima
+    const previewModal = document.createElement('div');
+    previewModal.className = 'modal fade';
+    previewModal.innerHTML = `
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Anteprima File</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center">
+                    <img src="${previewUrl}" class="img-fluid" alt="Anteprima" style="max-height: 70vh;">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" onclick="downloadFile(${fileId})">
+                        <i class="fas fa-download"></i> Download
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Chiudi</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(previewModal);
+    
+    const modal = new bootstrap.Modal(previewModal);
+    modal.show();
+    
+    // Rimuovi modal dal DOM quando viene chiuso
+    previewModal.addEventListener('hidden.bs.modal', function() {
+        document.body.removeChild(previewModal);
+    });
+}
+
+// ===========================================
+// GESTIONE AMMINISTRAZIONE
+// ===========================================
+
+function loadAdminData() {
+    if (currentUser.livello !== 'ADMIN') {
+        return;
+    }
+    
+    console.log('Loading admin data...');
+    
+    // Carica lista utenti
+    loadUsersList();
+    
+    // Carica statistiche sistema
+    loadSystemStats();
+    
+    // Carica log attivitÓ
+    loadActivityLog();
+}
+
+function loadUsersList() {
+    console.log('Loading users list...');
+    
+    fetch('debug_admin.php?action=users')
+        .then(response => {
+            console.log('Users response status:', response.status);
+            console.log('Users response headers:', response.headers);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.text();
+        })
+        .then(text => {
+            console.log('Raw response text:', text);
+            
+            try {
+                const data = JSON.parse(text);
+                console.log('Parsed users data:', data);
+                
+                if (data.success) {
+                    displayUsersList(data.users);
+                } else {
+                    document.getElementById('usersList').innerHTML = '<div class="alert alert-danger">Errore: ' + (data.error || 'Errore sconosciuto') + '</div>';
+                }
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError);
+                document.getElementById('usersList').innerHTML = '<div class="alert alert-danger">Errore parsing risposta: ' + parseError.message + '</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Errore caricamento utenti:', error);
+            document.getElementById('usersList').innerHTML = '<div class="alert alert-danger">Errore di connessione: ' + error.message + '</div>';
+        });
+}
+
+function loadSystemStats() {
+    console.log('Loading system stats...');
+    
+    fetch('debug_admin.php?action=system_stats')
+        .then(response => {
+            console.log('System stats response status:', response.status);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.text();
+        })
+        .then(text => {
+            console.log('Raw stats response text:', text);
+            
+            try {
+                const data = JSON.parse(text);
+                console.log('Parsed system stats data:', data);
+                
+                if (data.success) {
+                    displaySystemStats(data.stats);
+                } else {
+                    document.getElementById('systemStats').innerHTML = '<div class="alert alert-danger">Errore: ' + (data.error || 'Errore sconosciuto') + '</div>';
+                }
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError);
+                document.getElementById('systemStats').innerHTML = '<div class="alert alert-danger">Errore parsing risposta: ' + parseError.message + '</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Errore caricamento statistiche:', error);
+            document.getElementById('systemStats').innerHTML = '<div class="alert alert-danger">Errore di connessione: ' + error.message + '</div>';
+        });
+}
+
+function loadActivityLog() {
+    console.log('Loading activity log...');
+    
+    fetch('debug_admin.php?action=activity_log&per_page=20')
+        .then(response => {
+            console.log('Activity log response status:', response.status);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.text();
+        })
+        .then(text => {
+            console.log('Raw log response text:', text);
+            
+            try {
+                const data = JSON.parse(text);
+                console.log('Parsed activity log data:', data);
+                
+                if (data.success) {
+                    displayActivityLog(data.log_entries);
+                } else {
+                    document.getElementById('activityLog').innerHTML = '<div class="alert alert-danger">Errore: ' + (data.error || 'Errore sconosciuto') + '</div>';
+                }
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError);
+                document.getElementById('activityLog').innerHTML = '<div class="alert alert-danger">Errore parsing risposta: ' + parseError.message + '</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Errore caricamento log:', error);
+            document.getElementById('activityLog').innerHTML = '<div class="alert alert-danger">Errore di connessione: ' + error.message + '</div>';
+        });
+}
+
+function displaySystemStats(stats) {
+    const container = document.getElementById('systemStats');
+    
+    if (!stats) {
+        container.innerHTML = '<div class="alert alert-warning">Nessuna statistica disponibile</div>';
+        return;
+    }
+    
+    let html = `
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <div class="card border-primary">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-primary">${stats.total_users || 0}</h5>
+                        <p class="card-text">Utenti Totali</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="card border-success">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-success">${stats.active_users || 0}</h5>
+                        <p class="card-text">Utenti Attivi</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="card border-info">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-info">${stats.total_tickets || 0}</h5>
+                        <p class="card-text">Ticket Totali</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="card border-warning">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-warning">${stats.active_sessions || 0}</h5>
+                        <p class="card-text">Sessioni Attive</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="mt-3">
+            <h6>Spazio Utilizzato: <span class="badge bg-secondary">${stats.total_size_mb || 0} MB</span></h6>
+        </div>
+    `;
+    
+    container.innerHTML = html;
+}
+
+function displayActivityLog(logEntries) {
+    const container = document.getElementById('activityLog');
+    
+    if (!logEntries || logEntries.length === 0) {
+        container.innerHTML = '<div class="alert alert-info">Nessun log di attivitÓ disponibile</div>';
+        return;
+    }
+    
+    let html = `
+        <div class="table-responsive">
+            <table class="table table-sm table-hover">
+                <thead>
+                    <tr>
+                        <th>Data/Ora</th>
+                        <th>Azione</th>
+                        <th>Utente</th>
+                        <th>Dettagli</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    logEntries.forEach(entry => {
+        html += `
+            <tr>
+                <td><small>${formatDateTime(entry.DATA_ORA)}</small></td>
+                <td><span class="badge bg-primary">${escapeHtml(entry.AZIONE)}</span></td>
+                <td>${escapeHtml(entry.USERNAME || 'Sistema')}</td>
+                <td><small>${escapeHtml(entry.DETTAGLI || '-')}</small></td>
+            </tr>
+        `;
+    });
+    
+    html += `
+                </tbody>
+            </table>
+        </div>
+    `;
+    
+    container.innerHTML = html;
+}
+
+function displayUsersList(users) {
+    const container = document.getElementById('usersList');
+    
+    if (!users || users.length === 0) {
+        container.innerHTML = '<p class="text-muted">Nessun utente trovato</p>';
+        return;
+    }
+    
+    let html = '<div class="table-responsive"><table class="table table-sm table-hover">';
+    html += '<thead><tr><th>Username</th><th>Nome</th><th>Livello</th><th>Stato</th><th>Azioni</th></tr></thead><tbody>';
+    
+    users.forEach(user => {
+        const statusBadge = user.ATTIVO === 'S' ? 
+            '<span class="badge bg-success">Attivo</span>' : 
+            '<span class="badge bg-danger">Disattivo</span>';
+        
+        html += `
+            <tr>
+                <td><strong>${escapeHtml(user.USERNAME)}</strong></td>
+                <td>${escapeHtml(user.NOME_COMPL)}</td>
+                <td><span class="badge bg-primary">${user.LIVELLO}</span></td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="editUser('${user.USERNAME}')">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+    
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function showUserManagement() {
+    // Reset form
+    document.getElementById('userForm').reset();
+    document.getElementById('userAction').value = 'create';
+    document.getElementById('originalUsername').value = '';
+    
+    // Mostra modal
+    const modal = new bootstrap.Modal(document.getElementById('userModal'));
+    modal.show();
+}
+
+function editUser(username) {
+    // Carica dati utente e mostra modal di modifica
+    fetch(`debug_admin.php?action=user_detail&username=${encodeURIComponent(username)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Popola form con dati utente
+                document.getElementById('userUsername').value = data.user.USERNAME;
+                document.getElementById('userPassword').value = ''; // Non mostrare password
+                document.getElementById('userNome').value = data.user.NOME_COMPL;
+                document.getElementById('userLivello').value = data.user.LIVELLO;
+                document.getElementById('userAttivo').checked = data.user.ATTIVO === 'S';
+                
+                document.getElementById('userAction').value = 'edit';
+                document.getElementById('originalUsername').value = username;
+                
+                // Mostra modal
+                const modal = new bootstrap.Modal(document.getElementById('userModal'));
+                modal.show();
+            } else {
+                showAlert('Errore caricamento utente: ' + (data.error || 'Errore sconosciuto'), 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Errore caricamento utente:', error);
+            showAlert('Errore di connessione', 'danger');
+        });
+}
+
+function saveUser() {
+    const formData = new FormData();
+    
+    formData.append('action', document.getElementById('userAction').value);
+    formData.append('username', document.getElementById('userUsername').value);
+    formData.append('password', document.getElementById('userPassword').value);
+    formData.append('nome_completo', document.getElementById('userNome').value);
+    formData.append('livello', document.getElementById('userLivello').value);
+    formData.append('attivo', document.getElementById('userAttivo').checked ? 'S' : 'N');
+    formData.append('original_username', document.getElementById('originalUsername').value);
+    
+    fetch('admin.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('Utente salvato con successo', 'success');
+            
+            // Chiudi modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('userModal'));
+            modal.hide();
+            
+            // Ricarica lista utenti
+            loadUsersList();
+        } else {
+            showAlert('Errore salvataggio: ' + (data.error || 'Errore sconosciuto'), 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('Errore salvataggio utente:', error);
+        showAlert('Errore di connessione', 'danger');
+    });
+}
+
+// ===========================================
+// UTILITY FUNCTIONS
+// ===========================================
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatDate(dateString) {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('it-IT');
+}
+
+function formatDateTime(dateString) {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('it-IT') + ' ' + date.toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'});
+}
+
+function getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    switch (ext) {
+        case 'pdf': return 'fas fa-file-pdf text-danger';
+        case 'jpg':
+        case 'jpeg':
+        case 'png':
+        case 'gif':
+        case 'bmp': return 'fas fa-file-image text-primary';
+        case 'tif':
+        case 'tiff': return 'fas fa-file-image text-info';
+        default: return 'fas fa-file text-secondary';
+    }
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function truncateText(text, maxLength) {
+    if (!text) return '';
+    if (text.length <= maxLength) return escapeHtml(text);
+    return escapeHtml(text.substring(0, maxLength)) + '...';
+}
+
+function showAlert(message, type) {
+    // Crea alert temporaneo
+    const alertHtml = `
+        <div class="alert alert-${type} alert-dismissible fade show position-fixed" 
+             style="top: 20px; right: 20px; z-index: 9999; min-width: 300px;" role="alert">
+            <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'danger' ? 'exclamation-triangle' : 'info-circle'}"></i>
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    
+    // Rimuovi alert precedenti
+    document.querySelectorAll('.alert.position-fixed').forEach(alert => {
+        alert.remove();
+    });
+    
+    // Aggiungi nuovo alert
+    document.body.insertAdjacentHTML('beforeend', alertHtml);
+    
+    // Auto-remove dopo 5 secondi
+    setTimeout(() => {
+        const alert = document.querySelector('.alert.position-fixed');
+        if (alert) {
+            alert.remove();
+        }
+    }, 5000);
+}
+
+// ===========================================
+// GESTIONE EVENTI GLOBALI
+// ===========================================
+
+// Gestione errori di rete globali
+window.addEventListener('online', function() {
+    showAlert('Connessione ristabilita', 'success');
+});
+
+window.addEventListener('offline', function() {
+    showAlert('Connessione persa. Verificare la rete.', 'warning');
+});
+
+// Aggiornamento automatico sessione ogni 10 minuti
+setInterval(function() {
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.authenticated) {
+                showAlert('Sessione scaduta. Verrai reindirizzato al login.', 'warning');
+                setTimeout(() => {
+                    window.location.href = 'login.html';
+                }, 3000);
+            }
+        })
+        .catch(error => {
+            console.error('Errore verifica sessione automatica:', error);
+        });
+}, 10 * 60 * 1000); // 10 minuti
+
+// Conferma prima di uscire se ci sono modifiche non salvate
+window.addEventListener('beforeunload', function(e) {
+    const uploadForm = document.getElementById('uploadForm');
+    if (uploadForm) {
+        const numTicket = document.getElementById('numTicket').value;
+        const files = document.getElementById('fileAllegati').files;
+        
+        if (numTicket || files.length > 0) {
+            e.preventDefault();
+            e.returnValue = 'Ci sono modifiche non salvate. Vuoi davvero uscire?';
+        }
+    }
+});
+
+// Inizializza tooltips Bootstrap se presenti
+document.addEventListener('DOMContentLoaded', function() {
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function(tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+});
+
+/*
+ * ISTRUZIONI PER STYLE.CSS:
+ * 
+ * 1. Apri il file style.css
+ * 2. Scorri fino alla FINE del file
+ * 3. Aggiungi questo codice CSS ALLA FINE (dopo tutto il resto)
+ */
+
+/* ========================================
+   STILI PER PREVIEW FILE - NUOVA FUNZIONALITÀ
+   ======================================== */
+
+/* Pulsanti gruppo allegati - spaziatura migliorata */
+.btn-group-sm .btn {
+    margin-right: 2px;
+}
+
+.btn-group-sm .btn:last-child {
+    margin-right: 0;
+}
+
+/* Icona preview specifica - colore distintivo */
+.btn-outline-info .fa-eye {
+    color: #0dcaf0;
+}
+
+.btn-outline-info:hover .fa-eye {
+    color: #fff;
+}
+
+/* Modal preview migliorato - dimensioni ottimali */
+.modal-xl {
+    max-width: 90%;
+}
+
+/* Spinner per caricamento preview */
+.modal-body .spinner-border {
+    width: 3rem;
+    height: 3rem;
+}
+
+/* Iframe PDF responsive */
+.modal-body iframe {
+    min-height: 500px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+/* Miglioramenti per preview immagini */
+.modal-body img {
+    transition: transform 0.3s ease;
+    cursor: zoom-in;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.modal-body img:hover {
+    transform: scale(1.02);
+}
+
+/* Alert nel preview - centrato e stile migliorato */
+.modal-body .alert {
+    margin: 2rem auto;
+    max-width: 400px;
+    text-align: center;
+}
+
+/* Badge tipo file con colori specifici */
+.badge.bg-secondary {
+    background-color: #6c757d !important;
+}
+
+/* Miglioramenti tabella allegati */
+.table-hover tbody tr:hover {
+    background-color: rgba(0,0,0,0.075);
+}
+
+/* Tooltip per pulsanti - accessibilità */
+.btn[title] {
+    position: relative;
+}
+
+/* Responsive per dispositivi mobili */
+@media (max-width: 768px) {
+    .modal-xl {
+        max-width: 95%;
+        margin: 1rem;
+    }
+    
+    .modal-body iframe {
+        min-height: 400px;
+    }
+    
+    .btn-group-sm .btn {
+        padding: 0.25rem 0.4rem;
+        font-size: 0.75rem;
+    }
+    
+    /* Stack pulsanti su mobile se necessario */
+    .btn-group-sm {
+        flex-wrap: wrap;
+    }
+}
+
+/* Animazioni per migliorare UX */
+.btn-outline-info {
+    transition: all 0.2s ease;
+}
+
+.btn-outline-info:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(13, 202, 240, 0.3);
+}
+
+/* Stile per il contenuto del modal preview */
+#ticketModal .modal-body {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+/* Miglioramenti per i pulsanti azioni */
+.btn-group-sm .btn {
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.btn-group-sm .btn i {
+    font-size: 0.875rem;
+}

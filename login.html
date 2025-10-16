@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Sistema Gestione Ticket Post-Vendita</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="style.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 3rem;
+            max-width: 450px;
+            width: 100%;
+            margin: 2rem;
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .login-header h1 {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .login-header p {
+            color: #6c757d;
+            margin: 0;
+        }
+        
+        .form-floating {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-floating > .form-control {
+            border: 2px solid #e9ecef;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        
+        .form-floating > .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.25rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .btn-login {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            padding: 0.75rem;
+            font-weight: 600;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-login:hover {
+            background: linear-gradient(135deg, #5a6fd8, #6a4190);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .alert {
+            border: none;
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .spinner-border {
+            width: 1.5rem;
+            height: 1.5rem;
+            margin-right: 0.5rem;
+        }
+        
+        .system-info {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 2rem;
+            border-top: 1px solid #e9ecef;
+        }
+        
+        .system-info small {
+            color: #6c757d;
+        }
+        
+        @media (max-width: 576px) {
+            .login-container {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1><i class="fas fa-tools"></i> PostVendita</h1>
+            <p>Sistema Gestione Ticket Assistenza</p>
+        </div>
+        
+        <div id="alertContainer">
+            <!-- Alert verrà inserito qui da JavaScript -->
+        </div>
+        
+        <!-- FORM REALE CHE FA SEMPRE SUBMIT NORMALE -->
+        <form id="loginForm" method="POST" action="login.php?firefox=1">
+            <input type="hidden" name="firefox_submit" value="1">
+            
+            <div class="form-floating">
+                <input type="text" class="form-control" name="username" id="username" placeholder="Username" required autocomplete="username">
+                <label for="username"><i class="fas fa-user"></i> Username</label>
+            </div>
+            
+            <div class="form-floating">
+                <input type="password" class="form-control" name="password" id="password" placeholder="Password" required autocomplete="current-password">
+                <label for="password"><i class="fas fa-lock"></i> Password</label>
+            </div>
+            
+            <div class="d-grid">
+                <button type="submit" class="btn btn-primary btn-login" id="loginBtn">
+                    <span id="loginBtnText">
+                        <i class="fas fa-sign-in-alt"></i> Accedi
+                    </span>
+                    <span id="loginSpinner" class="d-none">
+                        <span class="spinner-border spinner-border-sm" role="status"></span>
+                        Accesso in corso...
+                    </span>
+                </button>
+            </div>
+        </form>
+        
+        <div class="system-info">
+            <small>
+                <i class="fas fa-shield-alt"></i> Sistema Sicuro<br>
+                Utilizzare credenziali aziendali
+            </small>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Gestione messaggi di errore
+            var urlParams = new URLSearchParams(window.location.search);
+            var error = urlParams.get('error');
+            
+            if (error) {
+                var errorMessage = '';
+                switch(error) {
+                    case 'username':
+                        errorMessage = 'Username richiesto';
+                        break;
+                    case 'password':
+                        errorMessage = 'Password richiesta';
+                        break;
+                    case 'invalid':
+                        errorMessage = 'Username o password non corretti';
+                        break;
+                    case 'session':
+                        errorMessage = 'Errore salvataggio sessione';
+                        break;
+                    case 'rate_limit':
+                        errorMessage = 'Troppi tentativi. Riprovare tra 5 minuti';
+                        break;
+                    case 'username_long':
+                        errorMessage = 'Username troppo lungo';
+                        break;
+                    case 'password_long':
+                        errorMessage = 'Password troppo lunga';
+                        break;
+                    default:
+                        errorMessage = 'Errore durante l\'accesso';
+                }
+                
+                var alertHtml = '<div class="alert alert-danger alert-dismissible fade show" role="alert">' +
+                               '<i class="fas fa-exclamation-triangle"></i> ' + errorMessage +
+                               '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                               '</div>';
+                
+                document.getElementById('alertContainer').innerHTML = alertHtml;
+            }
+            
+            // Focus automatico su username
+            document.getElementById('username').focus();
+            
+            // Mostra spinner quando si fa submit
+            document.getElementById('loginForm').addEventListener('submit', function(e) {
+                var username = document.getElementById('username').value.trim();
+                var password = document.getElementById('password').value;
+                
+                if (!username || !password) {
+                    e.preventDefault();
+                    alert('Inserire username e password');
+                    return false;
+                }
+                
+                // Mostra spinner
+                document.getElementById('loginBtn').disabled = true;
+                document.getElementById('loginBtnText').classList.add('d-none');
+                document.getElementById('loginSpinner').classList.remove('d-none');
+                
+                // Il form farà submit normale
+                return true;
+            });
+            
+            // Debug info
+            console.log('=== LOGIN PAGE LOADED ===');
+            console.log('Browser:', navigator.userAgent);
+            console.log('Using normal form submit for all browsers');
+            console.log('========================');
+        });
+    </script>
+</body>
+</html>
